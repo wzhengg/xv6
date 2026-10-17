@@ -20,4 +20,5 @@ barrier
 *.dSYM
 *.pcap
 TAGS
+tags
 /fs.img.bk
