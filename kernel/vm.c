@@ -151,7 +151,43 @@ walkaddr(pagetable_t pagetable, uint64 va)
 void
 vmprint(pagetable_t pagetable)
 {
-  // your code here
+  printk("page table %p\n", pagetable);
+
+  pagetable_t level2 = pagetable;
+  for (uint64 i = 0; i < 512; ++i) {
+    pte_t pte2 = level2[i];
+    if ((pte2 & PTE_V) == 0)
+      continue;
+    uint64 va = i << 30;
+    printk(" ..%p: pte %p pa %p\n", (void *)va, (void *)pte2, (void *)PTE2PA(pte2));
+
+    pagetable_t level1 = (pagetable_t)PTE2PA(pte2);
+    for (uint64 j = 0; j < 512; ++j) {
+      pte_t pte1 = level1[j];
+      if ((pte1 & PTE_V) == 0)
+        continue;
+      uint64 va = (i << 30) | (j << 21);
+      printk(" .. ..%p: pte %p pa %p\n", (void *)va, (void *)pte1, (void *)PTE2PA(pte1));
+
+      pagetable_t level0 = (pagetable_t)PTE2PA(pte1);
+      for (uint64 k = 0; k < 512; ++k) {
+        pte_t pte0 = level0[k];
+        if ((pte0 & PTE_V) == 0)
+          continue;
+        uint64 va = (i << 30) | (j << 21) | (k << 12);
+        printk(" .. .. ..%p: pte %p pa %p perm ", (void *)va, (void *)pte0, (void *)PTE2PA(pte0));
+        if (pte0 & PTE_R)
+          printk("R");
+        if (pte0 & PTE_W)
+          printk("W");
+        if (pte0 & PTE_X)
+          printk("X");
+        if (pte0 & PTE_U)
+          printk("U");
+        printk("\n");
+      }
+    }
+  }
 }
 #endif
 
