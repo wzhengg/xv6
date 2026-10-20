@@ -110,7 +110,45 @@ sys_vmprint(void)
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 base, mask;
+  int len;
+
+  argaddr(0, &base);
+  argint(1, &len);
+  argaddr(2, &mask);
+
+  if (base >= MAXVA)
+    return -1;
+  if (len < 0 || len > 256 || base+len*PGSIZE >= MAXVA)
+    return -1;
+  if (!mask)
+    return -1;
+
+  struct proc *p = myproc();
+  if (!p)
+    return -1;
+
+  uint8 buf[256/8];
+  memset(buf, 0, sizeof(buf));
+
+  for (int i = 0; i < len; ++i) {
+    uint64 va = base + i*PGSIZE;
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+      return -1;
+    if (*pte & PTE_A)
+      buf[i/8] |= 1 << i%8;
+    // Clear access bit after access otherwise it will be set forever.
+    *pte &= ~(pte_t)PTE_A;
+  }
+
+  // Assume caller passed in a pointer to a large enough buffer.
+  int cpylen = len / 8;
+  if (len % 8)
+    cpylen += 1;
+  if (copyout(p->pagetable, p->sz, mask, (char *)buf, cpylen) < 0)
+    return -1;
+
   return 0;
 }
 #endif
