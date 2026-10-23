@@ -137,6 +137,7 @@ printk(char *fmt, ...)
 void
 panic(char *s)
 {
+  backtrace();
   panicking = 1;
   printk("panic: ");
   printk("%s\n", s);
@@ -149,4 +150,20 @@ void
 printkinit(void)
 {
   initlock(&pr.lock, "pr");
+}
+
+void
+backtrace(void)
+{
+  uint64 fp, ra, pgstart;
+
+  printk("backtrace:\n");
+
+  fp = r_fp();
+  pgstart = PGROUNDDOWN(fp);
+  do {
+    ra = *(uint64 *)(fp - 8);
+    fp = *(uint64 *)(fp - 16);
+    printk("%p\n", (void *)ra);
+  } while (PGROUNDDOWN(fp) == pgstart);
 }
