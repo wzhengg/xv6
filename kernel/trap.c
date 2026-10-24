@@ -68,6 +68,20 @@ usertrap(void)
     syscall();
   } else if ((which_dev = devintr()) != 0) {
     // ok
+
+    if (which_dev == 2) {
+      // timer interrupt
+      if (p->alarminterval > 0 && p->sigreturnframe == 0) {
+        p->alarmtickspassed += 1;
+        if (p->alarmtickspassed >= p->alarminterval) {
+          if ((p->sigreturnframe = (struct trapframe *)kalloc()) == 0) {
+            panic("usertrap: kalloc failed");
+          }
+          memmove(p->sigreturnframe, p->trapframe, sizeof(struct trapframe));
+          p->trapframe->epc = p->alarmhandler;
+        }
+      }
+    }
   } else if ((r_scause() == 15 || r_scause() == 13) &&
              vmfault(p->pagetable, p->sz, r_stval(),
                      (r_scause() == 13) ? 1 : 0) != 0) {

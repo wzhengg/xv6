@@ -111,3 +111,33 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 handler;
+  struct proc *p;
+
+  argint(0, &ticks);
+  if (ticks < 0)
+    return -1;
+  argaddr(1, &handler);
+
+  p = myproc();
+  p->alarminterval = ticks;
+  p->alarmhandler = handler;
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  memmove(p->trapframe, p->sigreturnframe, sizeof(struct trapframe));
+  kfree(p->sigreturnframe);
+  p->sigreturnframe = 0;
+  p->alarmtickspassed = 0;
+  return 0;
+}
