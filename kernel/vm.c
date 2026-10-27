@@ -291,7 +291,8 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.
-// Copies both the page table and the
+// Copies just the page table and maps the
+// child's virtual addresses to the parent's
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
@@ -301,22 +302,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for (i = 0; i < sz; i += PGSIZE) {
     if ((pte = walk(old, i, 0)) == 0)
       continue; // page table entry hasn't been allocated
     if ((*pte & PTE_V) == 0)
       continue; // physical page hasn't been allocated
+    if (*pte & PTE_W)
+      *pte = (*pte & ~PTE_W) | PTE_COW;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if ((mem = kalloc()) == 0)
+    if (mappages(new, i, PGSIZE, pa, flags) != 0)
       goto err;
-    memmove(mem, (char *)pa, PGSIZE);
-    if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
-      kfree(mem);
-      goto err;
-    }
+    kpgrci(pa);
   }
   return 0;
 
@@ -361,7 +359,7 @@ copyout(pagetable_t pagetable, uint64 psz, uint64 dstva, char *src, uint64 len)
 
     pte = walk(pagetable, va0, 0);
     // forbid copyout over read-only user text pages.
-    if ((*pte & PTE_W) == 0)
+    if ((*pte & PTE_W) == 0 && (pa0 = vmfault(pagetable, psz, va0, 0)) == 0)
       return -1;
 
     n = PGSIZE - (dstva - va0);
@@ -453,27 +451,53 @@ copyinstr(pagetable_t pagetable, uint64 psz, char *dst, uint64 srcva,
 
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
-// returns 0 if va is invalid or already mapped, or if
-// out of physical memory, and physical address if successful.
+// create a writable copy of the page (if it is a CoW page) if
+// the fault is caused by writing to a read-only page.
+// returns 0 if va is invalid or already mapped, if
+// out of physical memory, or if writing to non-CoW page
+// and physical address if successful.
 uint64
 vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
 {
-  uint64 mem;
+  uint64 mem, pa;
+  pte_t *pte;
+  int mapped;
 
   if (va >= psz)
     return 0;
   va = PGROUNDDOWN(va);
-  if (ismapped(pagetable, va)) {
-    return 0;
+  pte = walk(pagetable, va, 0);
+  mapped = pte && (*pte & PTE_V);
+  if (mapped) {
+    if (read)
+      return 0;
+    if ((*pte & PTE_COW) == 0)
+      return 0;
   }
-  mem = (uint64)kalloc();
-  if (mem == 0)
-    return 0;
-  memset((void *)mem, 0, PGSIZE);
-  if (mappages(pagetable, va, PGSIZE, mem, PTE_W | PTE_U | PTE_R) != 0) {
-    kfree((void *)mem);
-    return 0;
+
+  if (mapped) {
+    // CoW
+    pa = PTE2PA(*pte);
+    if (kpgrc(pa) == 1) {
+      *pte |= PTE_W;
+      mem = pa;
+    } else {
+      if ((mem = (uint64)kalloc()) == 0)
+        return 0;
+      memmove((void *)mem, (void *)pa, PGSIZE);
+      *pte = PA2PTE(mem) | PTE_FLAGS(*pte) | PTE_W;
+      kpgrcd(pa);
+    }
+  } else {
+    if ((mem = (uint64)kalloc()) == 0)
+      return 0;
+    memset((void *)mem, 0, PGSIZE);
+    if (mappages(pagetable, va, PGSIZE, mem, PTE_W | PTE_U | PTE_R) != 0) {
+      kfree((void *)mem);
+      return 0;
+    }
   }
+
   return mem;
 }
 

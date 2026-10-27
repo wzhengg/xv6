@@ -21,7 +21,20 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  uint8 pgrc[(PHYSTOP - KERNBASE) / PGSIZE];
 } kmem;
+
+// translate physical address pa into index
+// in physical page reference count array.
+// pa must be a valid address in the kernel's
+// free memory (between end and PHYSTOP).
+int
+pgi(uint64 pa)
+{
+  if (pa < (uint64)end || pa >= PHYSTOP)
+    panic("pgi");
+  return (pa - KERNBASE) / PGSIZE;
+}
 
 void
 kinit()
@@ -35,8 +48,11 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char *)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
+  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE) {
+    // don't panic
+    kmem.pgrc[pgi((uint64)p)] = 1;
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -51,14 +67,17 @@ kfree(void *pa)
   if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run *)pa;
-
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  if (kmem.pgrc[pgi((uint64)pa)] == 0)
+    panic("kfree");
+  kmem.pgrc[pgi((uint64)pa)] -= 1;
+  if (kmem.pgrc[pgi((uint64)pa)] == 0) {
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+    r = (struct run *)pa;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
   release(&kmem.lock);
 }
 
@@ -72,11 +91,42 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if (r)
+  if (r) {
     kmem.freelist = r->next;
+    kmem.pgrc[pgi((uint64)r)] = 1;
+  }
   release(&kmem.lock);
 
   if (r)
     memset((char *)r, 5, PGSIZE); // fill with junk
   return (void *)r;
+}
+
+// get reference count for physical page of pa
+uint8
+kpgrc(uint64 pa)
+{
+  uint8 rc;
+  acquire(&kmem.lock);
+  rc = kmem.pgrc[pgi(pa)];
+  release(&kmem.lock);
+  return rc;
+}
+
+// increment reference count for physical page of pa
+void
+kpgrci(uint64 pa)
+{
+  acquire(&kmem.lock);
+  kmem.pgrc[pgi(pa)] += 1;
+  release(&kmem.lock);
+}
+
+// decrement reference count for physical page of pa
+void
+kpgrcd(uint64 pa)
+{
+  acquire(&kmem.lock);
+  kmem.pgrc[pgi(pa)] -= 1;
+  release(&kmem.lock);
 }
