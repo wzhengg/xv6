@@ -129,31 +129,44 @@ release(struct spinlock *lk)
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Put your implementation here.
+  while (1) {
+    __atomic_add_fetch(&rwlk->readers, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&rwlk->writers, __ATOMIC_SEQ_CST) == 0)
+      break;
+    __atomic_sub_fetch(&rwlk->readers, 1, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&rwlk->writers, __ATOMIC_SEQ_CST) > 0)
+      ;
+  }
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Put your implementation here.
+  __atomic_sub_fetch(&rwlk->readers, 1, __ATOMIC_SEQ_CST);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Put your implementation here.
+  __atomic_add_fetch(&rwlk->writers, 1, __ATOMIC_SEQ_CST);
+  while (__atomic_load_n(&rwlk->readers, __ATOMIC_SEQ_CST) > 0)
+    ;
+  acquire(&rwlk->wlock);
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Put your implementation here.
+  __atomic_sub_fetch(&rwlk->writers, 1, __ATOMIC_SEQ_CST);
+  release(&rwlk->wlock);
 }
 
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Put your implementation here.
+  initlock(&rwlk->wlock, "write lock");
+  rwlk->readers = 0;
+  rwlk->writers = 0;
 }
 
 void
