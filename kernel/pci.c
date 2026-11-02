@@ -16,7 +16,7 @@ pci_init()
 {
   // we'll place the tulip registers at this address.
   // vm.c maps this range.
-  uint64 tulip_regs = 0x40000000L;
+  uint64 tulip_regs = TULIP_REGS;
 
   // qemu -machine virt puts PCIe config space here.
   // vm.c maps this range.

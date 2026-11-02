@@ -200,6 +200,8 @@ devintr()
       uartintr();
     } else if (irq == VIRTIO0_IRQ) {
       virtio_disk_intr();
+    } else if (irq == TULIP_IRQ) {
+      tulipintr();
     }
     else if (irq) {
       printk("unexpected interrupt irq=%d\n", irq);

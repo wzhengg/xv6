@@ -26,7 +26,8 @@
 #define VIRTIO0_IRQ 1
 
 #ifdef LAB_NET
-#define TULIP_IRQ 33
+#define TULIP_REGS 0x40000000L
+#define TULIP_IRQ  33
 #endif
 
 // core-local interrupt controller (CLINT)
