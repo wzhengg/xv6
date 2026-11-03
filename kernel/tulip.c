@@ -13,7 +13,7 @@
 #include "proc.h"
 #include "defs.h"
 
-#define Reg(reg)         ((volatile uint64 *)(TULIP_REGS + (reg)))
+#define Reg(reg)         ((volatile uint32 *)(TULIP_REGS + (reg)))
 #define ReadReg(reg)     (*(Reg(reg)))
 #define WriteReg(reg, v) (*(Reg(reg)) = (v))
 
@@ -22,10 +22,13 @@
 #define RDES0_ES  (1 << 15)  // error summary
 #define RDES1_RER (1 << 25)  // receive end of ring
 #define TDES0_OWN (1 << 31)  // owned by 21143
+#define TDES0_ES  (1 << 15)  // error summary
+#define TDES1_IC  (1 << 31)  // interrupt on completion
 #define TDES1_LS  (1 << 30)  // last segment
 #define TDES1_FS  (1 << 29)  // first segment
 #define TDES1_TER (1 << 25)  // transmit end of ring
 
+#define CSR0     0x0
 #define CSR1     0x08
 #define CSR2     0x10
 #define CSR3     0x18
@@ -39,7 +42,10 @@
 #define CSR7     0x38
 #define CSR7_TIE (1 << 0)  // transmit interrupt enable
 #define CSR7_RIE (1 << 6)  // receive interrupt enable
+#define CSR7_RUE (1 << 7)  // receive buffer unavailable enable
+#define CSR7_AIE (1 << 15) // abnormal interrupt summary enable
 #define CSR7_NIE (1 << 16) // normal interrupt enable
+#define CSR8     0x40
 
 struct rxdes {
   uint32 rdes0;
@@ -60,6 +66,7 @@ struct spinlock lock;
 struct rxdes rxring[RING_SIZE];
 struct txdes txring[RING_SIZE];
 uint64 txbufs[RING_SIZE];
+uint rx_index;
 uint tx_index;
 
 //
@@ -81,14 +88,14 @@ tulip_init(volatile uint64 *csrs)
     if (i == RING_SIZE - 1)
       rxring[i].rdes1 |= RDES1_RER;
     __sync_synchronize();
-    rxring[i].rdes0 |= RDES0_OWN;
+    rxring[i].rdes0 = RDES0_OWN;
   }
 
   // receive list base address
-  WriteReg(CSR3, (uint64)rxring);
+  WriteReg(CSR3, (uint32)(uint64)rxring);
 
   // transmit list base address
-  WriteReg(CSR4, (uint64)txring);
+  WriteReg(CSR4, (uint32)(uint64)txring);
 
   // start/stop receive
   // promiscuous mode
@@ -96,7 +103,7 @@ tulip_init(volatile uint64 *csrs)
   WriteReg(CSR6, CSR6_MBO | CSR6_ST | CSR6_PR | CSR6_SR);
 
   // enable normal, receive, and transmit interrupts
-  WriteReg(CSR7, CSR7_NIE | CSR7_RIE | CSR7_TIE);
+  WriteReg(CSR7, CSR7_NIE | CSR7_AIE | CSR7_RUE | CSR7_RIE | CSR7_TIE);
 }
 
 
@@ -122,7 +129,7 @@ tulip_xmit(char *buf, int len)
   txbufs[tx_index] = (uint64)buf;
 
   des->tdes2 = (uint32)(uint64)buf;
-  des->tdes1 = TDES1_LS | TDES1_FS | len;
+  des->tdes1 = TDES1_IC | TDES1_LS | TDES1_FS | len;
   if (tx_index == RING_SIZE - 1)
     des->tdes1 |= TDES1_TER;
   __sync_synchronize();
@@ -139,27 +146,32 @@ tulip_xmit(char *buf, int len)
 void
 tulipintr(void)
 {
-  uint32 status = ReadReg(CSR5);
-  WriteReg(CSR5, status); // clear bits
+  // uint32 status = ReadReg(CSR5);
+  WriteReg(CSR5, ~(uint32)0); // clear bits
 
-  for (int i = 0; i < NELEM(rxring); ++i) {
+  while (1) {
     acquire(&lock);
-    if ((rxring[i].rdes0 & RDES0_OWN) || (rxring[i].rdes0 & RDES0_ES)) {
+    if (rxring[rx_index].rdes0 & RDES0_OWN) {
       release(&lock);
-      continue;
+      break;
     }
 
-    int len = (rxring[i].rdes0 & RDES0_FL) >> 16;
-    char *buf = (char *)(uint64)rxring[i].rdes2;
-    char *newbuf = kalloc();
-    if (!newbuf) {
-      newbuf = buf;
-      buf = 0;
+    int len = 0;
+    char *buf = 0;
+    if ((rxring[rx_index].rdes0 & RDES0_ES) == 0) {
+      len = (rxring[rx_index].rdes0 & RDES0_FL) >> 16;
+      buf = (char *)(uint64)rxring[rx_index].rdes2;
+      char *newbuf = kalloc();
+      if (!newbuf) {
+        newbuf = buf;
+        buf = 0;
+      }
+      rxring[rx_index].rdes2 = (uint32)(uint64)newbuf;
+      __sync_synchronize();
     }
-    rxring[i].rdes2 = (uint32)(uint64)newbuf;
-    __sync_synchronize();
-    rxring[i].rdes0 = RDES0_OWN;
 
+    rxring[rx_index].rdes0 = RDES0_OWN;
+    rx_index = (rx_index + 1) % RING_SIZE;
     release(&lock);
 
     if (buf)

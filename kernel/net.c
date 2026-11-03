@@ -20,6 +20,19 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+struct queue {
+#define RING_SIZE 4
+  struct {
+    char *buf;
+    int len;
+  } ring[RING_SIZE];
+  uint r;
+  uint w;
+  uint sz;
+};
+
+static struct queue *queues[65535];
+
 void
 netinit(void)
 {
@@ -35,11 +48,30 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
 
-  return -1;
+  acquire(&netlock);
+
+  if (queues[port]) {
+    // port is already bound
+    release(&netlock);
+    return -1;
+  }
+
+  queues[port] = (struct queue *)kalloc();
+  if (!queues[port]) {
+    release(&netlock);
+    return -1;
+  }
+
+  queues[port]->r = 0;
+  queues[port]->w = 0;
+  queues[port]->sz = 0;
+
+  release(&netlock);
+
+  return 0;
 }
 
 //
@@ -50,9 +82,29 @@ sys_bind(void)
 uint64
 sys_unbind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
+
+  acquire(&netlock);
+
+  struct queue *queue = queues[port];
+
+  if (!queue) {
+    // port isn't bound
+    release(&netlock);
+    return -1;
+  }
+
+  while (queue->sz > 0) {
+    kfree(queue->ring[queue->r].buf);
+    queue->r = (queue->r + 1) % RING_SIZE;
+    queue->sz--;
+  }
+
+  kfree(queue);
+  queues[port] = 0;
+
+  release(&netlock);
 
   return 0;
 }
@@ -75,10 +127,70 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  struct proc *p = myproc();
+  int dport;
+  uint64 src;
+  uint64 sport;
+  uint64 bufaddr;
+  int maxlen;
+
+  argint(0, &dport);
+  argaddr(1, &src);
+  argaddr(2, &sport);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+
+  acquire(&netlock);
+
+  struct queue *queue = queues[dport];
+  if (!queue) {
+    release(&netlock);
+    return -1;
+  }
+
+  while (queue->sz == 0) {
+    if (killed(p)) {
+      release(&netlock);
+      return -1;
+    }
+    sleep_prepare(&queue->sz);
+    release(&netlock);
+    sleep();
+    acquire(&netlock);
+  }
+
+  char *buf = queue->ring[queue->r].buf;
+  struct eth *eth = (struct eth *)buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp*)(ip + 1);
+  char *payload = (char *)(udp + 1);
+  uint16 payload_len = ntohs(udp->ulen) - sizeof(struct udp);
+  if (payload_len > maxlen)
+    payload_len = maxlen;
+
+  uint32 srcip = ntohl(ip->ip_src);
+  uint16 srcport = ntohs(udp->sport);
+
+  if (copyout(p->pagetable, p->sz, src, (char *)&srcip, sizeof(srcip)) < 0) {
+    release(&netlock);
+    return -1;
+  }
+  if (copyout(p->pagetable, p->sz, sport, (char *)&srcport, sizeof(srcport)) < 0) {
+    release(&netlock);
+    return -1;
+  }
+  if (copyout(p->pagetable, p->sz, bufaddr, payload, payload_len) < 0) {
+    release(&netlock);
+    return -1;
+  }
+
+  kfree(buf);
+  queue->r = (queue->r + 1) % RING_SIZE;
+  queue->sz--;
+
+  release(&netlock);
+
+  return payload_len;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -189,12 +301,35 @@ ip_rx(char *buf, int len)
     printk("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  printk("."); // help Tulip receive debugging; delete if you want to.
+  // printk("."); // help Tulip receive debugging; delete if you want to.
 
-  //
-  // Your code here.
-  //
-  
+  if (len < sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp))
+    return;
+
+  struct eth *eth = (struct eth *)buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp*)(ip + 1);
+
+  acquire(&netlock);
+
+  uint16 dport = ntohs(udp->dport);
+  struct queue *queue = queues[dport];
+  if (ip->ip_p != IPPROTO_UDP || !queue || queue->sz == RING_SIZE) {
+    // drop packet
+    kfree(buf);
+    release(&netlock);
+    return;
+  }
+
+  queue->ring[queue->w].buf = buf;
+  queue->ring[queue->w].len = len;
+  queue->w = (queue->w + 1) % RING_SIZE;
+  queue->sz++;
+  wakeup(&queue->sz);
+
+  release(&netlock);
+
+  printk("ip_rx: rx on %u\n", dport);
 }
 
 //

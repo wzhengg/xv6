@@ -333,6 +333,14 @@ QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 ifeq ($(LAB),net)
 QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT1)-:2000,hostfwd=udp::$(FWDPORT2)-:2001 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
 QEMUOPTS += -device tulip,netdev=net0,bus=pcie.0
+# QEMUOPTS += --trace 'tulip_reg_write'
+# QEMUOPTS += --trace 'tulip_reg_read'
+# QEMUOPTS += --trace 'tulip_descriptor'
+# QEMUOPTS += --trace 'tulip_receive'
+# QEMUOPTS += --trace 'tulip_tx_state'
+# QEMUOPTS += --trace 'tulip_rx_state'
+# QEMUOPTS += --trace 'tulip_irq'
+# QEMUOPTS += --trace 'tulip_*'
 endif
 
 # makes a new fs.img
